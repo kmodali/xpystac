@@ -137,59 +137,59 @@ def _(
         if storage_options:
             open_kwargs["storage_options"] = storage_options
     
-    if (
-        allow_kerchunk
-        and obj.media_type == pystac.MediaType.JSON
-        and {"index", "references"}.intersection(set(obj.roles) if obj.roles else set())
-    ):
-        requests = _import_optional_dependency("requests")
-        r = requests.get(obj.href)
-        r.raise_for_status()
+        if (
+            allow_kerchunk
+            and obj.media_type == pystac.MediaType.JSON
+            and {"index", "references"}.intersection(set(obj.roles) if obj.roles else set())
+        ):
+            requests = _import_optional_dependency("requests")
+            r = requests.get(obj.href)
+            r.raise_for_status()
 
-        refs = r.json()
+            refs = r.json()
+            if patch_url is not None:
+                refs = patch_url(refs)
+
+            default_kwargs = {
+                "engine": "kerchunk",
+            }
+            return xarray.open_dataset(refs, **{**default_kwargs, **open_kwargs, **kwargs})
+
+        
+        if obj.media_type == pystac.MediaType.COG:
+            _import_optional_dependency("rioxarray")
+            default_kwargs = {**default_kwargs, "engine": "rasterio"}
+        elif obj.media_type in ["application/vnd+zarr", "application/vnd.zarr"]:
+            _import_optional_dependency("zarr")
+            zarr_kwargs = {}
+            if "zarr:consolidated" in obj.extra_fields:
+                zarr_kwargs["consolidated"] = obj.extra_fields["zarr:consolidated"]
+            if "zarr:zarr_format" in obj.extra_fields:
+                zarr_kwargs["zarr_format"] = obj.extra_fields["zarr:zarr_format"]
+            default_kwargs = {**zarr_kwargs, "engine": "zarr"}
+        elif obj.media_type == "application/vnd.zarr+icechunk":
+            from xpystac._icechunk import read_icechunk
+
+            return read_icechunk(obj)        
+                
+        # MKM added for handling the 'archive' extension, as of now only plain '*.tar'
+        # not zipped tarfiles.
+        elif obj.media_type == "application/x-tar":
+            new_href=_extract_tar_file(obj)
+            print("Extraction Done!!!")
+            print(f"Extracted tar file:{new_href}")
+            # Check the archive:type and set the appropriate engine (as of now 'tar' of 'zarr',
+            # hence 'zarr' engine) to the xarray
+            default_kwargs = {**default_kwargs, "engine": "zarr"}
+            # Pass the new_href and the kwargs to xarray
+            return xarray.open_dataset(new_href, **{**default_kwargs, **open_kwargs, **kwargs})
+        
+        href = obj.href
         if patch_url is not None:
-            refs = patch_url(refs)
+            href = patch_url(href)
 
-        default_kwargs = {
-            "engine": "kerchunk",
-        }
-        return xarray.open_dataset(refs, **{**default_kwargs, **open_kwargs, **kwargs})
-
-    
-    if obj.media_type == pystac.MediaType.COG:
-        _import_optional_dependency("rioxarray")
-        default_kwargs = {**default_kwargs, "engine": "rasterio"}
-    elif obj.media_type in ["application/vnd+zarr", "application/vnd.zarr"]:
-        _import_optional_dependency("zarr")
-        zarr_kwargs = {}
-        if "zarr:consolidated" in obj.extra_fields:
-            zarr_kwargs["consolidated"] = obj.extra_fields["zarr:consolidated"]
-        if "zarr:zarr_format" in obj.extra_fields:
-            zarr_kwargs["zarr_format"] = obj.extra_fields["zarr:zarr_format"]
-        default_kwargs = {**zarr_kwargs, "engine": "zarr"}
-    elif obj.media_type == "application/vnd.zarr+icechunk":
-        from xpystac._icechunk import read_icechunk
-
-        return read_icechunk(obj)        
-    
-    # MKM added for handling the 'archive' extension, as of now only plain '*.tar'
-    # not zipped tarfiles.
-    elif obj.media_type == "application/x-tar":
-        new_href=_extract_tar_file(obj)
-        print("Extraction Done!!!")
-        print(f"Extracted tar file:{new_href}")
-        # Check the archive:type and set the appropriate engine (as of now 'tar' of 'zarr',
-        # hence 'zarr' engine) to the xarray
-        default_kwargs = {**default_kwargs, "engine": "zarr"}
-        # Pass the new_href and the kwargs to xarray
-        return xarray.open_dataset(new_href, **{**default_kwargs, **open_kwargs, **kwargs})
-    
-    href = obj.href
-    if patch_url is not None:
-        href = patch_url(href)
-
-        ds = xarray.open_dataset(href, **{**default_kwargs, **open_kwargs, **kwargs})
-        return ds
+            ds = xarray.open_dataset(href, **{**default_kwargs, **open_kwargs, **kwargs})
+            return ds
 
     elif isinstance(obj, list):
         print("List of Assets as input!",flush=True)
