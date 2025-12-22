@@ -175,14 +175,15 @@ def _(
         # MKM added for handling the 'archive' extension, as of now only plain '*.tar'
         # not zipped tarfiles.
         elif obj.media_type == "application/x-tar":
-            new_href=_extract_tar_file(obj)
-            print("Extraction Done!!!")
-            print(f"Extracted tar file:{new_href}")
-            # Check the archive:type and set the appropriate engine (as of now 'tar' of 'zarr',
-            # hence 'zarr' engine) to the xarray
-            default_kwargs = {**default_kwargs, "engine": "zarr"}
-            # Pass the new_href and the kwargs to xarray
-            return xarray.open_dataset(new_href, **{**default_kwargs, **open_kwargs, **kwargs})
+            zarr =  _import_optional_dependency("zarr")
+            if 'TarStore' not in zarr.storage.__all__: 
+                raise ImportError("zarr.storage.TarStore not found! Please update 'zarr' to the latest version.")                        
+            else:
+                print(f"Extracting tar file:{obj.href}")
+                # MKM With new tarstore implementation in zarr-python
+                with zarr.storage.TarStore(obj.href, mode = 'r') as tar_store:
+                    return xarray.open_zarr(tar_store, **kwargs)
+            
         
         href = obj.href
         if patch_url is not None:
@@ -194,7 +195,6 @@ def _(
     elif isinstance(obj, list):
         print("List of Assets as input!",flush=True)
         # Create a list of assets from the list of items.
-        # Prepare a dictionary to map the item, asset (tar ball) and the path where the tar ball has been extracted to.
         # Concate all the zarr stores from each tar ball and create the xarray
         # Return the xarray created above, with engine as 'zarr' ( for this particular use case )
          
@@ -214,10 +214,14 @@ def _(
 
             if ref_media_type == "application/x-tar":
                 print(f"Extracting tar file:{i.href}")
-                new_href=_extract_tar_file(i)
-                zarr_store_list.append(new_href)
+                # MKM With new tarstore implementation in zarr-python
+                zarr_store_list.append(i.href)
 
-        default_kwargs = {**default_kwargs, "engine": "zarr"}
-        # Pass the new_href and the kwargs to xarray
-        return xarray.open_mfdataset(zarr_store_list, **{**default_kwargs, **open_kwargs, **kwargs})
-
+        #default_kwargs = {**default_kwargs, "engine": "zarr"}
+        zarr =  _import_optional_dependency("zarr")
+        if 'TarStore' not in zarr.storage.__all__: 
+            raise ImportError("zarr.storage.TarStore not found! Please update 'zarr' to the latest version.")
+        else:
+            # MKM TODO: To fix the concat_dims etc.
+            return xarray.open_mfdataset(zarr_store_list, engine='zarr', concat_dim=kwargs.get("concat_dim", "time"))
+            #return xarray.open_mfdataset(zarr_store_list, **{**default_kwargs, **open_kwargs, **kwargs})
