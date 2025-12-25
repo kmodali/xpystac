@@ -4,7 +4,7 @@ from collections.abc import Callable
 import pystac
 import xarray
 import os
-from tqdm import tqdm
+#from tqdm import tqdm
 
 from xpystac._xstac_kerchunk import _stac_to_kerchunk
 from xpystac.utils import _import_optional_dependency
@@ -80,36 +80,7 @@ def _(
             return xarray.open_dataset(mapper, **{**default_kwargs, **kwargs})
 
 
-def _extract_tar_file(obj):
-
-    tarfile=_import_optional_dependency("tarfile")
-    tempfile=_import_optional_dependency("tempfile")
-    pathlib=_import_optional_dependency("pathlib")
-    # Extract the archive:href from obj->href ( *.tar ) to a temp dir and pass
-    # this  temp dir as the obj.href to xarray
-    tmppath=os.getenv("STAC_TMP_DIR")
-    with tempfile.TemporaryDirectory(dir=tmppath,delete=False) as tmpdirname:
-        print(f"tar arch ext file:{obj.extra_fields}")
-        mytar = tarfile.open(obj.href)
-        myvar = obj.extra_fields["archive:href"]
-        myvarFiles = [ tarinfo for tarinfo in mytar.getmembers() if tarinfo.name.startswith(myvar)]
-        #Check if the 'archive:href' string ends with '.zarr' .i.e., extract the entire zarr store
-        if myvar.endswith(('.zarr','.zarr/')):
-            #case -1 : tar of zarr .. Complete zarr store
-            new_href = os.path.join(tmpdirname,obj.extra_fields["archive:href"])
-        else:
-            #case -2 : tar of var or #case -3 : tar of chunk .. Incomplete zarr store
-            myvarFiles.extend( [ tarinfo for tarinfo in mytar.getmembers() if tarinfo.name.endswith('.zmetadata') ] )
-            myvarFiles.extend( [ tarinfo for tarinfo in mytar.getmembers() if tarinfo.name.endswith('.zgroup') ] )
-            zarr_path = obj.extra_fields["archive:href"].split('.zarr')[0] + '.zarr'
-            new_href = os.path.join(tmpdirname,zarr_path)
-
-        # TODO: Add a progress bar to help the user 
-        mytar.extractall(tmpdirname,myvarFiles)
-
-    return new_href    
-
-@to_xarray.register
+@to_xarray.register( pystac.Asset )
 def _(
     obj: pystac.Asset,
     patch_url: None | Callable[[str], str] = None,
@@ -179,7 +150,7 @@ def _(
             if 'TarStore' not in zarr.storage.__all__: 
                 raise ImportError("zarr.storage.TarStore not found! Please update 'zarr' to the latest version.")                        
             else:
-                print(f"Extracting tar file:{obj.href}")
+                print(f"Opening tarstore : {obj.href}")
                 # MKM With new tarstore implementation in zarr-python
                 with zarr.storage.TarStore(obj.href, mode = 'r') as tar_store:
                     return xarray.open_zarr(tar_store, **kwargs)
@@ -192,36 +163,57 @@ def _(
             ds = xarray.open_dataset(href, **{**default_kwargs, **open_kwargs, **kwargs})
             return ds
 
-    elif isinstance(obj, list):
-        print("List of Assets as input!",flush=True)
-        # Create a list of assets from the list of items.
-        # Concate all the zarr stores from each tar ball and create the xarray
-        # Return the xarray created above, with engine as 'zarr' ( for this particular use case )
-         
-        open_kwargs = obj[0].extra_fields.get("xarray:open_kwargs", {})
+
+@to_xarray.register( list )
+def _(
+    obj: list[pystac.Asset], 
+    patch_url: None | Callable[[str], str] = None,
+    allow_kerchunk: bool = True,
+    **kwargs,
+) -> xarray.Dataset:
     
-        storage_options = obj[0].extra_fields.get("xarray:storage_options", None)
-        if storage_options:
-            open_kwargs["storage_options"] = storage_options
+    if not isinstance( obj, list ):
+        raise TypeError('Input is not a list of assets!')
+    
+    if not isinstance( obj[0], pystac.Asset ):
+        raise TypeError('Input is not a list of assets!')
+    
+    open_kwargs = obj[0].extra_fields.get("xarray:open_kwargs", {})
 
-        ref_media_type = obj[0].media_type
-        zarr_store_list = []
-        for i in tqdm(obj):
-            # Check the type of the assets -- for homogenity ( all are tar balls )
-            if i.media_type != ref_media_type:
-                print(f"Encountered {i.to_dict()} which differs with {ref_media_type}!")
-                return xarray.Dataset(data_vars=None, coords=None, attrs=None) # Empty Dataset
+    default_kwargs: Mapping = {"chunks": {}}
 
-            if ref_media_type == "application/x-tar":
-                print(f"Extracting tar file:{i.href}")
-                # MKM With new tarstore implementation in zarr-python
-                zarr_store_list.append(i.href)
+    
+    print("List of Assets as input!",flush=True)
+    # Create a list of assets from the list of items.
+    # Concate all the zarr stores from each tar ball and create the xarray
+    # Return the xarray created above, with engine as 'zarr' ( for this particular use case )
+        
+    open_kwargs = obj[0].extra_fields.get("xarray:open_kwargs", {})
 
-        #default_kwargs = {**default_kwargs, "engine": "zarr"}
-        zarr =  _import_optional_dependency("zarr")
-        if 'TarStore' not in zarr.storage.__all__: 
-            raise ImportError("zarr.storage.TarStore not found! Please update 'zarr' to the latest version.")
-        else:
-            # MKM TODO: To fix the concat_dims etc.
-            return xarray.open_mfdataset(zarr_store_list, engine='zarr', concat_dim=kwargs.get("concat_dim", "time"))
-            #return xarray.open_mfdataset(zarr_store_list, **{**default_kwargs, **open_kwargs, **kwargs})
+    storage_options = obj[0].extra_fields.get("xarray:storage_options", None)
+    if storage_options:
+        open_kwargs["storage_options"] = storage_options
+
+    ref_media_type = obj[0].media_type
+    zarr_store_list = []
+    tqdm =  _import_optional_dependency("tqdm")
+    for i in tqdm.tqdm(obj):
+        # Check the type of the assets -- for homogenity ( all are tar balls )
+        if i.media_type != ref_media_type:
+            print(f"Encountered {i.to_dict()} which differs with {ref_media_type}!")
+            return xarray.Dataset(data_vars=None, coords=None, attrs=None) # Empty Dataset
+
+        if ref_media_type == "application/x-tar":
+            print(f"Opening tarstore : {i.href}")
+            # MKM With new tarstore implementation in zarr-python
+            zarr_store_list.append(i.href)
+
+    #default_kwargs = {**default_kwargs, "engine": "zarr"}
+    zarr =  _import_optional_dependency("zarr")
+    if 'TarStore' not in zarr.storage.__all__: 
+        raise ImportError("zarr.storage.TarStore not found! Please update 'zarr' to the latest version.")
+    else:
+        # MKM TODO: To fix the concat_dims etc.
+        tarStoreList = [ zarr.storage.TarStore( storePath, mode='r') for storePath in zarr_store_list ]
+        return xarray.open_mfdataset( tarStoreList, engine = 'zarr' )
+        #return xarray.open_mfdataset(zarr_store_list, **{**default_kwargs, **open_kwargs, **kwargs})
