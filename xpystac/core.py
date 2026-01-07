@@ -3,8 +3,6 @@ from collections.abc import Callable
 
 import pystac
 import xarray
-import os
-#from tqdm import tqdm
 
 from xpystac._xstac_kerchunk import _stac_to_kerchunk
 from xpystac.utils import _import_optional_dependency
@@ -91,27 +89,28 @@ def _(
 
     # MKM 18 Oct 2024
     #TODO : Check if the obj is list instance or pystac.Asset instance and
-    # accordingly if just one asset pass it through xarray, 
+    # accordingly if just one asset pass it through xarray,
     # else, collect the assets and pass to xarray as open_mfdataset.
     # In case of tar balls, extract each of them and the store these paths
     # send the list of these zarr stores to xarray.open_mfdataset()
     # It should work.
 
-    default_kwargs: Mapping = {"chunks": {}}
+    default_kwargs = {}
 
     # Check the type of the 'obj'
     if isinstance(obj, pystac.Asset):
         print("Asset as input!",flush=True)
         #open_kwargs = obj.extra_fields.get("xarray:open_kwargs", {})
-    
+
         storage_options = obj.extra_fields.get("xarray:storage_options", None)
         if storage_options:
             open_kwargs["storage_options"] = storage_options
-    
+
         if (
             allow_kerchunk
             and obj.media_type == pystac.MediaType.JSON
-            and {"index", "references"}.intersection(set(obj.roles) if obj.roles else set())
+            and {"index", "references"}.intersection(set(obj.roles)
+                                            if obj.roles else set())
         ):
             requests = _import_optional_dependency("requests")
             r = requests.get(obj.href)
@@ -124,9 +123,10 @@ def _(
             default_kwargs = {
                 "engine": "kerchunk",
             }
-            return xarray.open_dataset(refs, **{**default_kwargs, **open_kwargs, **kwargs})
+            return xarray.open_dataset(refs, **{**default_kwargs,
+                                            **open_kwargs, **kwargs})
 
-        
+
         if obj.media_type == pystac.MediaType.COG:
             _import_optional_dependency("rioxarray")
             default_kwargs = {**default_kwargs, "engine": "rasterio"}
@@ -141,53 +141,55 @@ def _(
         elif obj.media_type == "application/vnd.zarr+icechunk":
             from xpystac._icechunk import read_icechunk
 
-            return read_icechunk(obj)        
-                
-        # MKM added for handling the 'archive' extension, as of now only plain '*.tar'
-        # not zipped tarfiles.
+            return read_icechunk(obj)
+
+        # Handling the 'archive' extension,
+        # as of now only plain '*.tar' files are handled.
         elif obj.media_type == "application/x-tar":
             zarr =  _import_optional_dependency("zarr")
-            if 'TarStore' not in zarr.storage.__all__: 
-                raise ImportError("zarr.storage.TarStore not found! Please update 'zarr' to the latest version.")                        
+            if 'TarStore' not in zarr.storage.__all__:
+                raise ImportError("zarr.storage.TarStore not found! " \
+                    "Please update 'zarr' to the latest version.")
             else:
                 print(f"Opening tarstore : {obj.href}")
                 # MKM With new tarstore implementation in zarr-python
                 with zarr.storage.TarStore(obj.href, mode = 'r') as tar_store:
                     return xarray.open_zarr(tar_store, **kwargs)
-            
-        
+
+
         href = obj.href
         if patch_url is not None:
             href = patch_url(href)
-
-            ds = xarray.open_dataset(href, **{**default_kwargs, **open_kwargs, **kwargs})
+            ds = xarray.open_dataset(href, **{**default_kwargs,
+                                        **open_kwargs, **kwargs})
             return ds
 
 
 @to_xarray.register( list )
 def _(
-    obj: list[pystac.Asset], 
+    obj: list[pystac.Asset],
     patch_url: None | Callable[[str], str] = None,
     allow_kerchunk: bool = True,
     **kwargs,
 ) -> xarray.Dataset:
-    
+
     if not isinstance( obj, list ):
         raise TypeError('Input is not a list of assets!')
-    
+
     if not isinstance( obj[0], pystac.Asset ):
         raise TypeError('Input is not a list of assets!')
-    
+
     open_kwargs = obj[0].extra_fields.get("xarray:open_kwargs", {})
 
-    default_kwargs: Mapping = {"chunks": {}}
 
-    
+
     print("List of Assets as input!",flush=True)
-    # Create a list of assets from the list of items.
-    # Concate all the zarr stores from each tar ball and create the xarray
-    # Return the xarray created above, with engine as 'zarr' ( for this particular use case )
-        
+    # Creates a list of assets from the list of items.
+    # Concates all the zarr stores from each tar ball and
+    # creates the xarray Dataset,with engine as 'zarr'.
+    # Returns the xarray Dataset created above,
+    # ( for this particular use case )
+
     open_kwargs = obj[0].extra_fields.get("xarray:open_kwargs", {})
 
     storage_options = obj[0].extra_fields.get("xarray:storage_options", None)
@@ -201,19 +203,20 @@ def _(
         # Check the type of the assets -- for homogenity ( all are tar balls )
         if i.media_type != ref_media_type:
             print(f"Encountered {i.to_dict()} which differs with {ref_media_type}!")
-            return xarray.Dataset(data_vars=None, coords=None, attrs=None) # Empty Dataset
+            # Empty Dataset
+            return xarray.Dataset(data_vars=None, coords=None, attrs=None)
 
         if ref_media_type == "application/x-tar":
             print(f"Opening tarstore : {i.href}")
-            # MKM With new tarstore implementation in zarr-python
+            # To be opened with new tarstore implementation in zarr-python
             zarr_store_list.append(i.href)
-
-    #default_kwargs = {**default_kwargs, "engine": "zarr"}
+    
     zarr =  _import_optional_dependency("zarr")
-    if 'TarStore' not in zarr.storage.__all__: 
-        raise ImportError("zarr.storage.TarStore not found! Please update 'zarr' to the latest version.")
+    if 'TarStore' not in zarr.storage.__all__:
+        raise ImportError("zarr.storage.TarStore not found! " \
+                "Please update 'zarr' to the latest version.")
     else:
-        # MKM TODO: To fix the concat_dims etc.
-        tarStoreList = [ zarr.storage.TarStore( storePath, mode='r') for storePath in zarr_store_list ]
+        # TODO: To fix the concat_dims etc. for hierarchical datasets.
+        tarStoreList = [ zarr.storage.TarStore( storePath, mode='r')
+                            for storePath in zarr_store_list ]
         return xarray.open_mfdataset( tarStoreList, engine = 'zarr' )
-        #return xarray.open_mfdataset(zarr_store_list, **{**default_kwargs, **open_kwargs, **kwargs})

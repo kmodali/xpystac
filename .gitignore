@@ -9,3 +9,5 @@ build
 .ruff_cache
 *.egg-info/
 .venv
+*.tar
+*.zarr
